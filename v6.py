@@ -1,20 +1,20 @@
-"""val loss 2.16"""
+"""val loss 1.471 in 85 minutes"""
 import logging
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 32  # how many independent sequences to process in parallel
-block_size = 8  # maximum context length
+batch_size = 64  # how many independent sequences to process in parallel
+block_size = 256  # maximum context length
 max_iters = 5000
 eval_interval = 500
-learning_rate = 1e-3
+learning_rate = 3e-4
 device = "mps"
 eval_iters = 200
-n_embed = 32
-n_layer = 3
-n_head = 4
+n_embed = 384
+n_layer = 6
+n_head = 6
 dropout = 0.2
 
 
@@ -187,23 +187,9 @@ n = int(0.9*len(data))
 train_data = data[:n]
 val_data = data[n:]
 logging.info(f"train: {train_data.shape}, validation: {val_data.shape}")
-xb, yb = get_batch("train")
-logging.info(f"inputs: {xb.shape} targets: {yb.shape}")
-for b in range(batch_size):
-    for t in range(block_size):
-        context = xb[b, :t+1]
-        target = yb[b, t]
-        logging.info(f"{b=} {t=} when input is {context.tolist()} the target is {target}")
 model = BigramLanguageModel()
 m = model.to(device)
-logits, loss = m(xb, yb)
-logging.info(f"output: {logits.shape}")
-logging.info(f"loss: {loss}")
-idx = torch.zeros((1, 1), dtype=torch.long, device=device)
-tokids = m.generate(idx, max_new_tokens=100)
-logging.debug(f"generated token ids: {tokids.tolist()}")
-logging.info(decode(tokids[0].tolist()))
-# train the model
+logging.info("train the model")
 optimizer = torch.optim.AdamW(m.parameters(), lr=learning_rate)
 for iter in range(max_iters):
 
@@ -221,6 +207,7 @@ for iter in range(max_iters):
     loss.backward()
     optimizer.step()
 logging.info(f"loss after training: {loss.item()}")
+idx = torch.zeros((1, 1), dtype=torch.long, device=device)
 tokids = m.generate(idx, max_new_tokens=400)
 logging.info(f"output after training: {decode(tokids[0].tolist())}")
 logging.info("completed")
