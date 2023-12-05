@@ -1,3 +1,4 @@
+"""val loss 2.16"""
 import logging
 import torch
 import torch.nn as nn
@@ -9,9 +10,12 @@ block_size = 8  # maximum context length
 max_iters = 5000
 eval_interval = 500
 learning_rate = 1e-3
-device = "cuda" if torch.cuda.is_available() else "mps"
+device = "mps"
 eval_iters = 200
 n_embed = 32
+n_layer = 3
+n_head = 4
+dropout = 0.2
 
 
 def get_batch(split):
@@ -47,6 +51,7 @@ class Head(nn.Module):
         self.query = nn.Linear(n_embed, head_size, bias=False)
         self.value = nn.Linear(n_embed, head_size, bias=False)
         self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(dropout)
     
     def forward(self, x):
         B, T, C = x.shape
@@ -56,6 +61,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * C**-0.5
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))  # (B,T,T)
         wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
         # perform the weighted aggregation of the values
         v = self.value(x)
         out = wei @ v  # (B,T,C)
@@ -69,10 +75,11 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(n_embed, n_embed)
+        self.dropout = nn.Dropout(dropout)
     
     def forward(self, x):
         vec = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.proj(vec)
+        out = self.dropout(self.proj(vec))
         return out
 
 
@@ -85,6 +92,7 @@ class FeedForward(nn.Module):
             nn.Linear(n_embd, 4 * n_embd),
             nn.ReLU(),
             nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout),
         )
     
     def forward(self, x):
@@ -100,10 +108,12 @@ class Block(nn.Module):
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
         self.ffwd = FeedForward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
     
     def forward(self, x):
-        x1 = x + self.sa(x)
-        x2 = x1 + self.ffwd(x1)
+        x1 = x + self.sa(self.ln1(x))
+        x2 = x1 + self.ffwd(self.ln2(x1))
         return x2
 
 
@@ -113,11 +123,8 @@ class BigramLanguageModel(nn.Module):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_embed)
         self.position_embedding_table = nn.Embedding(block_size, n_embed)
-        self.blocks = nn.Sequential(
-            Block(n_embed, n_head=4),
-            Block(n_embed, n_head=4),
-            Block(n_embed, n_head=4),
-        )
+        self.blocks = nn.Sequential(*[Block(n_embed, n_head=n_head) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embed)  # final layer norm
         self.lm_head = nn.Linear(n_embed, vocab_size)
     
     def forward(self, idx, targets=None):
@@ -127,7 +134,8 @@ class BigramLanguageModel(nn.Module):
         pos_emb = self.position_embedding_table(torch.arange(T, device=device))  # (T,C)
         x1 = tok_emb + pos_emb
         x2 = self.blocks(x1)
-        logits = self.lm_head(x2)  # (B,T,vocab_size)
+        x3 = self.ln_f(x2)
+        logits = self.lm_head(x3)  # (B,T,vocab_size)
         if targets is None:
             logits2 = logits
             loss = None
@@ -156,7 +164,7 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 
-logging.basicConfig(level="INFO")
+logging.basicConfig(level="INFO", format="[%(levelname)s] %(asctime)s.%(msecs)03d %(name)s.%(funcName)s#%(lineno)d - %(message)s")
 torch.manual_seed(1337)
 logging.info("started")
 with open("input.txt", "r", encoding="utf-8") as fp:
